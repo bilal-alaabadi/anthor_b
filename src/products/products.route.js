@@ -26,31 +26,19 @@ router.post("/uploadImages", async (req, res) => {
 // نقطة النهاية لإنشاء منتج
 router.post("/create-product", async (req, res) => {
   try {
-    const { name, category, description, price, regularPrice, image, author } = req.body;
+    const { name, category, description, price, image, author } = req.body;
 
-    // تحقق من الحقول المطلوبة
-    if (!name || !category || !description || !image || !author) {
+    // التحقق من الحقول المطلوبة
+    if (!name || !category || !description || !price || !image || !author) {
       return res.status(400).send({ message: "جميع الحقول المطلوبة يجب إرسالها" });
-    }
-
-    // تحقق من الأسعار بناءً على الفئة
-    if (category === 'حناء بودر') {
-      if (!price || !price['500 جرام'] || !price['1 كيلو']) {
-        return res.status(400).send({ message: "يجب إدخال سعرين للحناء بودر (500 جرام و1 كيلو)" });
-      }
-    } else {
-      if (!regularPrice) {
-        return res.status(400).send({ message: "يجب إدخال سعر المنتج" });
-      }
     }
 
     const newProduct = new Products({
       name,
       category,
       description,
-      price: category === 'حناء بودر' ? price : undefined,
-      regularPrice: category !== 'حناء بودر' ? regularPrice : undefined,
-      image,
+      price,
+      image, // يجب أن تكون مصفوفة من روابط الصور
       author,
     });
 
@@ -68,7 +56,7 @@ router.post("/create-product", async (req, res) => {
     res.status(201).send(savedProduct);
   } catch (error) {
     console.error("Error creating new product", error);
-    res.status(500).send({ message: "Failed to create new product" });
+    res.status(500).send({ message: "فشل إنشاء المنتج" });
   }
 });
 
@@ -142,28 +130,47 @@ router.get("/:id", async (req, res) => {
 });
 
 // update a product
-router.patch("/update-product/:id", verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const productId = req.params.id;
-    const updatedProduct = await Products.findByIdAndUpdate(
-      productId,
-      { ...req.body },
-      { new: true }
-    );
+const multer = require('multer');
+const upload = multer();
+router.patch("/update-product/:id", 
+  verifyToken, 
+  verifyAdmin, 
+  upload.single('image'), // معالجة تحميل الصورة
+  async (req, res) => {
+    try {
+      const productId = req.params.id;
+      const updateData = {
+        ...req.body,
+        author: req.body.author
+      };
 
-    if (!updatedProduct) {
-      return res.status(404).send({ message: "المنتج غير موجود" });
+      if (req.file) {
+        updateData.image = [req.file.path]; // أو أي طريقة تخزين تستخدمها للصور
+      }
+
+      const updatedProduct = await Products.findByIdAndUpdate(
+        productId,
+        { $set: updateData },
+        { new: true, runValidators: true }
+      );
+
+      if (!updatedProduct) {
+        return res.status(404).send({ message: "المنتج غير موجود" });
+      }
+
+      res.status(200).send({
+        message: "تم تحديث المنتج بنجاح",
+        product: updatedProduct,
+      });
+    } catch (error) {
+      console.error("Error updating the product", error);
+      res.status(500).send({ 
+        message: "فشل تحديث المنتج",
+        error: error.message
+      });
     }
-
-    res.status(200).send({
-      message: "تم تحديث المنتج بنجاح",
-      product: updatedProduct,
-    });
-  } catch (error) {
-    console.error("خطأ في تحديث المنتج:", error);
-    res.status(500).send({ message: "فشل في تحديث المنتج", error: error.message });
   }
-});
+);
 
 // delete a product
 

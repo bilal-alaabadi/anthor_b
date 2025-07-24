@@ -15,15 +15,14 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(
     cors({
-        origin:"https://www.henna-burgund.shop",
-        // origin: "https://www.royasow.store",//مال الفرونت اند
+        origin:"http://localhost:5173",
         credentials: true,
     })
 );
 
 // دعم طلبات OPTIONS (Preflight Requests)
 app.options('*', (req, res) => {
-    res.header('Access-Control-Allow-Origin', 'https://henna-f.vercel.app');
+    res.header('Access-Control-Allow-Origin', 'http://localhost:5173');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.send();

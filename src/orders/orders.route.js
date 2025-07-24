@@ -18,19 +18,31 @@ app.use(express.json());
 // Create checkout session
 
 router.post("/create-checkout-session", async (req, res) => {
-    const { products, email } = req.body;
+    const { products, email, customerName, customerPhone, wilayat } = req.body;
+    const shippingFee = 2; // رسوم الشحن الثابتة
 
     if (!Array.isArray(products) || products.length === 0) {
         return res.status(400).json({ error: "Invalid or empty products array" });
     }
 
     try {
+        // حساب المبلغ الإجمالي مع رسوم الشحن
+        const subtotal = products.reduce((total, product) => total + (product.price * product.quantity), 0);
+        const totalAmount = subtotal + shippingFee;
+
         const lineItems = products.map((product) => ({
             name: product.name,
             productId: product._id,
             quantity: product.quantity,
             unit_amount: Math.round(product.price * 1000), // Convert to baisa
         }));
+
+        // إضافة رسوم الشحن كعنصر منفصل
+        lineItems.push({
+            name: "رسوم الشحن",
+            quantity: 1,
+            unit_amount: Math.round(shippingFee * 1000), // Convert to baisa
+        });
 
         const data = {
             client_reference_id: Date.now().toString(),
@@ -48,28 +60,33 @@ router.post("/create-checkout-session", async (req, res) => {
         });
 
         const sessionId = response.data.data.session_id;
-        // const paymentLink = `https://uatcheckout.thawani.om/pay/${sessionId}?key=${THAWANI_API_KEY}`;
         const paymentLink = `https://uatcheckout.thawani.om/pay/${sessionId}?key=${publish_key}`;
 
-        // // Save order in the database
+        // حفظ الطلب في قاعدة البيانات مع رسوم الشحن
         const order = new Order({
             orderId: sessionId,
             products: products.map((product) => ({
                 productId: product._id,
                 quantity: product.quantity,
             })),
-            amount: products.reduce((total, product) => total + product.price * product.quantity, 0),
+            amount: totalAmount,
+            shippingFee: shippingFee,
+            customerName,
+            customerPhone,
+            wilayat,
+            email,
             status: "pending",
-            email: email,
         });
 
         await order.save();
 
-        // Send the payment link to the frontend instead of redirecting
         res.json({ id: sessionId, paymentLink });
     } catch (error) {
         console.error("Error creating checkout session:", error);
-        res.status(500).json({ error: "Failed to create checkout session", details: error.message });
+        res.status(500).json({ 
+            error: "Failed to create checkout session", 
+            details: error.message 
+        });
     }
 });
 
