@@ -16,7 +16,7 @@ app.use(cookieParser());
 // Enhanced CORS configuration
 const allowedOrigins = [
   "https://www.alanthor.com",
-  "https://www.alanthor.com",
+  "https://alanthor.com",
 ];
 
 app.use(cors({
