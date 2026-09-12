@@ -1,3 +1,4 @@
+// ====================== src/products/products.route.js (كامل) ======================
 const express = require("express");
 const Products = require("./products.model");
 const Reviews = require("../reviews/reviews.model");
@@ -5,67 +6,79 @@ const verifyToken = require("../middleware/verifyToken");
 const verifyAdmin = require("../middleware/verifyAdmin");
 const router = express.Router();
 
-// post a product
-const { uploadImages } = require("../utils/uploadImage");
+const { uploadImages, uploadBufferToCloudinary } = require("../utils/uploadImage");
 
+// (اختياري) رفع Base64 عبر هذا الراوت داخل منتجات
 router.post("/uploadImages", async (req, res) => {
-    try {
-        const { images } = req.body; // images هي مصفوفة من base64
-        if (!images || !Array.isArray(images)) {
-            return res.status(400).send({ message: "يجب إرسال مصفوفة من الصور" });
-        }
-
-        const uploadedUrls = await uploadImages(images);
-        res.status(200).send(uploadedUrls);
-    } catch (error) {
-        console.error("Error uploading images:", error);
-        res.status(500).send({ message: "حدث خطأ أثناء تحميل الصور" });
+  try {
+    const { images } = req.body; // مصفوفة Base64/DataURL
+    if (!images || !Array.isArray(images)) {
+      return res.status(400).send({ message: "يجب إرسال مصفوفة من الصور" });
     }
+    const uploadedUrls = await uploadImages(images);
+    res.status(200).send(uploadedUrls);
+  } catch (error) {
+    console.error("Error uploading images:", error);
+    res.status(500).send({ message: "حدث خطأ أثناء تحميل الصور" });
+  }
 });
 
-// نقطة النهاية لإنشاء منتج
+// إنشاء منتج
+// POST /api/products/create-product
 router.post("/create-product", async (req, res) => {
   try {
-    const { name, category, size, description,  oldPrice, price, image, author } = req.body;
+    const ALLOWED = [
+      "عطور",
+      "معطرات الجسم",
+      'معطر الجو',
+      'عصي العتم'
+    ];
 
-    // التحقق من الحقول المطلوبة الأساسية
-    if (!name || !category || !description || !price || !image || !author) {
+    let { name, category, description, oldPrice, price, image, author, inStock, stock } = req.body;
+
+    if (!name || !category || !description || !price || !image || !author)
       return res.status(400).send({ message: "جميع الحقول المطلوبة يجب إرسالها" });
+
+    if (!ALLOWED.includes(category))
+      return res.status(400).send({ message: "الصنف غير مدعوم" });
+
+    const priceNum = Number(price);
+    const oldPriceNum = oldPrice !== "" && oldPrice !== undefined ? Number(oldPrice) : undefined;
+    if (!Number.isFinite(priceNum) || priceNum <= 0)
+      return res.status(400).send({ message: "السعر غير صالح" });
+
+    // ✅ تحقق من كمية المخزون
+    const stockNum = Number(stock);
+    if (!Number.isFinite(stockNum) || stockNum < 0) {
+      return res.status(400).send({ message: "الكمية في المخزون غير صالحة" });
     }
 
-    // إذا كانت الفئة حناء بودر، نتحقق من وجود الحجم
-    if (category === 'حناء بودر' && !size) {
-      return res.status(400).send({ message: "يجب تحديد حجم الحناء" });
-    }
+    const images = Array.isArray(image) ? image : [String(image)];
+    if (!images.length) return res.status(400).send({ message: "يجب إرسال صور" });
 
-    // إنشاء كائن المنتج
     const productData = {
-      name: category === 'حناء بودر' ? `${name} - ${size}` : name,
+      name: String(name).trim(),
       category,
-      description,
-      price,
-      oldPrice,
-      image,
+      description: String(description).trim(),
+      price: priceNum,
+      ...(Number.isFinite(oldPriceNum) ? { oldPrice: oldPriceNum } : {}),
+      image: images,
       author,
+      stock: stockNum, // ✅ تخزين الكمية
+      ...(typeof inStock === "boolean" ? { inStock } : {}),
     };
 
-    // إضافة الحجم فقط لمنتجات الحناء
-    if (category === 'حناء بودر') {
-      productData.size = size;
-    }
-
-    const newProduct = new Products(productData);
-    const savedProduct = await newProduct.save();
-
-    res.status(201).send(savedProduct);
-  } catch (error) {
-    console.error("Error creating new product", error);
+    const saved = await new Products(productData).save();
+    res.status(201).send(saved);
+  } catch (err) {
+    console.error("Error creating new product", err);
     res.status(500).send({ message: "Failed to create new product" });
   }
 });
 
 
-// get all products
+
+// جميع المنتجات
 router.get("/", async (req, res) => {
   try {
     const {
@@ -82,16 +95,12 @@ router.get("/", async (req, res) => {
 
     if (category && category !== "all") {
       filter.category = category;
-      
-      // إذا كانت الفئة حناء بودر وكان هناك حجم محدد
-      if (category === 'حناء بودر' && size) {
+      if (category === "حناء بودر" && size) {
         filter.size = size;
       }
     }
 
-    if (color && color !== "all") {
-      filter.color = color;
-    }
+    if (color && color !== "all") filter.color = color;
 
     if (minPrice && maxPrice) {
       const min = parseFloat(minPrice);
@@ -118,22 +127,15 @@ router.get("/", async (req, res) => {
   }
 });
 
-//   get single Product
-// get single Product (يدعم كلا المسارين)
+// منتج واحد (يدعم مسارين)
 router.get(["/:id", "/product/:id"], async (req, res) => {
   try {
     const productId = req.params.id;
-    const product = await Products.findById(productId).populate(
-      "author",
-      "email username"
-    );
+    const product = await Products.findById(productId).populate("author", "email username");
     if (!product) {
       return res.status(404).send({ message: "Product not found" });
     }
-    const reviews = await Reviews.find({ productId }).populate(
-      "userId",
-      "username email"
-    );
+    const reviews = await Reviews.find({ productId }).populate("userId", "username email");
     res.status(200).send({ product, reviews });
   } catch (error) {
     console.error("Error fetching the product", error);
@@ -141,68 +143,173 @@ router.get(["/:id", "/product/:id"], async (req, res) => {
   }
 });
 
-// update a product
-const multer = require('multer');
-const upload = multer();
+// تحديث منتج (إظهار/حذف صور حالية + إضافة صور جديدة)
+const multer = require("multer");
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
 
-router.patch("/update-product/:id", 
-    verifyToken, 
-    verifyAdmin, 
-    upload.single('image'),
-    async (req, res) => {
+router.patch(
+  "/update-product/:id",
+  upload.array("image"),
+  async (req, res) => {
+    try {
+      const productId = req.params.id;
+
+      const productExists = await Products.findById(productId);
+
+      if (!productExists) {
+        return res.status(404).send({
+          message: "المنتج غير موجود",
+        });
+      }
+
+      const rawName =
+        typeof req.body.name === "string"
+          ? req.body.name
+          : "";
+
+      const baseName = rawName
+        .replace(/\s*\([^)]*\)\s*$/g, "")
+        .trim();
+
+      const size =
+        typeof req.body.size === "string"
+          ? req.body.size.trim()
+          : "";
+
+      const finalName = size
+        ? `${baseName} (${size})`
+        : baseName;
+
+      // ✅ استخدام stock وليس quantity
+      const stock =
+        req.body.stock !== undefined &&
+        req.body.stock !== ""
+          ? Number(req.body.stock)
+          : Number(productExists.stock || 0);
+
+      if (!Number.isFinite(stock) || stock < 0) {
+        return res.status(400).send({
+          message: "كمية المخزون يجب أن تكون رقمًا 0 أو أكبر",
+        });
+      }
+
+      const inStockRaw = req.body.inStock;
+
+      const requestedInStock =
+        typeof inStockRaw === "boolean"
+          ? inStockRaw
+          : String(inStockRaw).toLowerCase() === "true";
+
+      const updateData = {
+        name: finalName,
+        category: req.body.category,
+        subCategory: req.body.subCategory || "",
+        price: Number(req.body.price),
+        oldPrice: req.body.oldPrice
+          ? Number(req.body.oldPrice)
+          : null,
+
+        // ✅ المخزون الصحيح
+        stock,
+
+        description: req.body.description,
+        size: size || null,
+        author: req.body.author,
+
+        // ✅ إذا المخزون صفر يعتبر المنتج منتهي تلقائياً
+  inStock: stock > 0,
+      };
+
+      if (
+        !updateData.name ||
+        !updateData.category ||
+        !updateData.price ||
+        updateData.stock === null ||
+        updateData.stock === undefined ||
+        !updateData.description
+      ) {
+        return res.status(400).send({
+          message: "جميع الحقول المطلوبة يجب إرسالها",
+        });
+      }
+
+      let keepImages = [];
+
+      if (
+        typeof req.body.keepImages === "string" &&
+        req.body.keepImages.trim() !== ""
+      ) {
         try {
-            const productId = req.params.id;
-            
-            let updateData = {
-                name: req.body.name,
-                category: req.body.category,
-                price: req.body.price,
-                oldPrice: req.body.oldPrice || null,
-                description: req.body.description,
-                size: req.body.size || null,
-                author: req.body.author
-            };
+          const parsed = JSON.parse(req.body.keepImages);
 
-            // التحقق من الحقول المطلوبة للتحديث
-            if (!updateData.name || !updateData.category || !updateData.price || !updateData.description) {
-                return res.status(400).send({ message: "جميع الحقول المطلوبة يجب إرسالها" });
-            }
-
-            // إذا كانت الفئة حناء بودر، نتحقق من وجود الحجم
-            if (updateData.category === 'حناء بودر' && !updateData.size) {
-                return res.status(400).send({ message: "يجب تحديد حجم الحناء" });
-            }
-
-            if (req.file) {
-                updateData.image = req.file.path;
-            }
-
-            const updatedProduct = await Products.findByIdAndUpdate(
-                productId,
-                { $set: updateData },
-                { new: true, runValidators: true }
-            );
-
-            if (!updatedProduct) {
-                return res.status(404).send({ message: "المنتج غير موجود" });
-            }
-
-            res.status(200).send({
-                message: "تم تحديث المنتج بنجاح",
-                product: updatedProduct,
-            });
-        } catch (error) {
-            console.error("خطأ في تحديث المنتج", error);
-            res.status(500).send({ 
-                message: "فشل تحديث المنتج",
-                error: error.message
-            });
+          if (Array.isArray(parsed)) {
+            keepImages = parsed;
+          }
+        } catch (_) {
+          keepImages = [];
         }
+      }
+
+      let newImageUrls = [];
+
+      if (
+        Array.isArray(req.files) &&
+        req.files.length > 0
+      ) {
+        newImageUrls = await Promise.all(
+          req.files.map((file) =>
+            uploadBufferToCloudinary(
+              file.buffer,
+              "products"
+            )
+          )
+        );
+      }
+
+      if (
+        keepImages.length > 0 ||
+        newImageUrls.length > 0
+      ) {
+        updateData.image = [
+          ...keepImages,
+          ...newImageUrls,
+        ];
+      }
+
+      const updatedProduct =
+        await Products.findByIdAndUpdate(
+          productId,
+          {
+            $set: updateData,
+          },
+          {
+            new: true,
+            runValidators: true,
+          }
+        );
+
+      res.status(200).send({
+        message: "تم تحديث المنتج بنجاح",
+        product: updatedProduct,
+      });
+
+    } catch (error) {
+      console.error(
+        "خطأ في تحديث المنتج",
+        error
+      );
+
+      res.status(500).send({
+        message: "فشل تحديث المنتج",
+        error: error.message,
+      });
     }
+  }
 );
 
-// delete a product
 
+// حذف منتج
 router.delete("/:id", async (req, res) => {
   try {
     const productId = req.params.id;
@@ -212,49 +319,34 @@ router.delete("/:id", async (req, res) => {
       return res.status(404).send({ message: "Product not found" });
     }
 
-    // delete reviews related to the product
-    await Reviews.deleteMany({ productId: productId });
-
-    res.status(200).send({
-      message: "Product deleted successfully",
-    });
+    await Reviews.deleteMany({ productId });
+    res.status(200).send({ message: "Product deleted successfully" });
   } catch (error) {
     console.error("Error deleting the product", error);
     res.status(500).send({ message: "Failed to delete the product" });
   }
 });
 
-// get related products
+// منتجات ذات صلة
 router.get("/related/:id", async (req, res) => {
   try {
     const { id } = req.params;
+    if (!id) return res.status(400).send({ message: "Product ID is required" });
 
-    if (!id) {
-      return res.status(400).send({ message: "Product ID is required" });
-    }
     const product = await Products.findById(id);
-    if (!product) {
-      return res.status(404).send({ message: "Product not found" });
-    }
+    if (!product) return res.status(404).send({ message: "Product not found" });
 
     const titleRegex = new RegExp(
-      product.name
-        .split(" ")
-        .filter((word) => word.length > 1)
-        .join("|"),
+      product.name.split(" ").filter((w) => w.length > 1).join("|"),
       "i"
     );
 
     const relatedProducts = await Products.find({
-      _id: { $ne: id }, // Exclude the current product
-      $or: [
-        { name: { $regex: titleRegex } }, // Match similar names
-        { category: product.category }, // Match the same category
-      ],
+      _id: { $ne: id },
+      $or: [{ name: { $regex: titleRegex } }, { category: product.category }],
     });
 
     res.status(200).send(relatedProducts);
-
   } catch (error) {
     console.error("Error fetching the related products", error);
     res.status(500).send({ message: "Failed to fetch related products" });
