@@ -1,44 +1,112 @@
 const express = require("express");
 const cors = require("cors");
 const Order = require("./orders.model");
+const Product = require("../products/products.model");
 const verifyToken = require("../middleware/verifyToken");
 const verifyAdmin = require("../middleware/verifyAdmin");
 const router = express.Router();
 const axios = require("axios");
 require("dotenv").config();
 
-const THAWANI_API_KEY = process.env.THAWANI_API_KEY; 
+const THAWANI_API_KEY = process.env.THAWANI_API_KEY;
 const THAWANI_API_URL = process.env.THAWANI_API_URL;
 const THAWANI_PUBLISH_KEY = process.env.THAWANI_PUBLISH_KEY;
 
 const app = express();
 app.use(cors({ origin: "https://www.alanthor.com" }));
 app.use(express.json());
-
 // Create checkout session
 router.post("/create-checkout-session", async (req, res) => {
-  const { products, email, customerName, customerPhone, country, wilayat, description } = req.body;
+  const {
+    products,
+    email,
+    customerName,
+    customerPhone,
+    country,
+    wilayat,
+    description,
+    deliveryType
+  } = req.body;
 
-  const shippingFee = country === 'الإمارات' ? 4 : 2;
+  // ==========================================
+  // نوع التوصيل ورسوم الشحن
+  // home = توصيل للبيت = 2 ر.ع
+  // office = استلام من المكتب = 1 ر.ع
+  // ==========================================
+  if (!deliveryType || !["home", "office"].includes(deliveryType)) {
+    return res.status(400).json({
+      error: "الرجاء اختيار نوع التوصيل"
+    });
+  }
+
+  const shippingFee =
+    deliveryType === "office" ? 1 : 2;
 
   if (!Array.isArray(products) || products.length === 0) {
-    return res.status(400).json({ error: "Invalid or empty products array" });
+    return res.status(400).json({
+      error: "Invalid or empty products array"
+    });
   }
 
   try {
-    const subtotal = products.reduce((total, product) => total + (product.price * product.quantity), 0);
+
+    // ==========================================
+    // التحقق من توفر الكمية قبل إنشاء عملية الدفع
+    // ==========================================
+    for (const product of products) {
+      const quantity = Number(product.quantity);
+
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        return res.status(400).json({
+          error: `الكمية المطلوبة للمنتج ${product.name} غير صحيحة`
+        });
+      }
+
+      const dbProduct = await Product.findById(product._id);
+
+      if (!dbProduct) {
+        return res.status(404).json({
+          error: `المنتج ${product.name} غير موجود`
+        });
+      }
+
+      if (
+        dbProduct.inStock === false ||
+        Number(dbProduct.stock) <= 0
+      ) {
+        return res.status(409).json({
+          error: `نفذت كمية المنتج: ${dbProduct.name}`
+        });
+      }
+
+      if (Number(dbProduct.stock) < quantity) {
+        return res.status(409).json({
+          error: `الكمية المطلوبة من ${dbProduct.name} غير متوفرة. المتوفر حالياً ${dbProduct.stock}`
+        });
+      }
+    }
+
+    const subtotal = products.reduce(
+      (total, product) =>
+        total + product.price * product.quantity,
+      0
+    );
+
     const totalAmount = subtotal + shippingFee;
 
     const lineItems = products.map((product) => ({
       name: product.name,
       productId: product._id,
       quantity: product.quantity,
-      unit_amount: Math.round(product.price * 1000), // السعر بالبيسة
+      unit_amount: Math.round(product.price * 1000),
     }));
 
     // رسوم الشحن
     lineItems.push({
-      name: "رسوم الشحن",
+      name:
+        deliveryType === "office"
+          ? "استلام من المكتب"
+          : "توصيل للبيت",
       quantity: 1,
       unit_amount: Math.round(shippingFee * 1000),
     });
@@ -48,33 +116,58 @@ router.post("/create-checkout-session", async (req, res) => {
     const data = {
       client_reference_id: nowId,
       mode: "payment",
+
       products: lineItems,
-      success_url: "https://www.alanthor.com/SuccessRedirect?client_reference_id=" + nowId,
-      cancel_url: "https://www.alanthor.com/cancel",
+
+      success_url:
+        "https://www.alanthor.com/SuccessRedirect?client_reference_id=" +
+        nowId,
+
+      cancel_url:
+        "https://www.alanthor.com/cancel",
+
       metadata: {
         customer_name: customerName,
         customer_phone: customerPhone,
         email: email || "غير محدد",
         country: country,
         wilayat: wilayat,
-        description: description || "لا يوجد وصف",
+
+        delivery_type:
+          deliveryType === "office"
+            ? "استلام من المكتب"
+            : "توصيل للبيت",
+
+        shipping_fee: String(shippingFee),
+
+        description:
+          description || "لا يوجد وصف",
+
         internal_order_id: nowId,
         source: "mern-backend"
       }
     };
 
-    const response = await axios.post(`${THAWANI_API_URL}/checkout/session`, data, {
-      headers: {
-        "Content-Type": "application/json",
-        "thawani-api-key": THAWANI_API_KEY,
-      },
-    });
+    const response = await axios.post(
+      `${THAWANI_API_URL}/checkout/session`,
+      data,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "thawani-api-key": THAWANI_API_KEY,
+        },
+      }
+    );
 
-    const sessionId = response.data.data.session_id;
-    const paymentLink = `https://checkout.thawani.om/pay/${sessionId}?key=${THAWANI_PUBLISH_KEY}`;
+    const sessionId =
+      response.data.data.session_id;
+
+    const paymentLink =
+      `https://checkout.thawani.om/pay/${sessionId}?key=${THAWANI_PUBLISH_KEY}`;
 
     const order = new Order({
       orderId: sessionId,
+
       products: products.map((product) => ({
         productId: product._id,
         quantity: product.quantity,
@@ -82,25 +175,94 @@ router.post("/create-checkout-session", async (req, res) => {
         price: product.price,
         image: product.image,
       })),
+
       amount: totalAmount,
+
       shippingFee: shippingFee,
+
       customerName,
+
       customerPhone,
+
       country,
+
       wilayat,
+
       description,
+
       email,
+
       status: "pending",
     });
 
     await order.save();
 
-    res.json({ id: sessionId, paymentLink });
+    // ==========================================
+    // خصم الكمية من المخزون
+    // ==========================================
+    for (const product of products) {
+      const quantity =
+        Number(product.quantity);
+
+      const updatedProduct =
+        await Product.findOneAndUpdate(
+          {
+            _id: product._id,
+            stock: {
+              $gte: quantity
+            },
+            inStock: {
+              $ne: false
+            },
+          },
+          {
+            $inc: {
+              stock: -quantity,
+            },
+          },
+          {
+            new: true,
+          }
+        );
+
+      if (!updatedProduct) {
+        throw new Error(
+          `تعذر خصم كمية المنتج ${product.name} من المخزون`
+        );
+      }
+
+      // إذا وصلت الكمية إلى صفر
+      if (
+        Number(updatedProduct.stock) <= 0
+      ) {
+        await Product.findByIdAndUpdate(
+          product._id,
+          {
+            $set: {
+              stock: 0,
+              inStock: false,
+            },
+          }
+        );
+      }
+    }
+
+    res.json({
+      id: sessionId,
+      paymentLink
+    });
+
   } catch (error) {
-    console.error("Error creating checkout session:", error);
+    console.error(
+      "Error creating checkout session:",
+      error
+    );
+
     res.status(500).json({
-      error: "Failed to create checkout session",
-      details: error.message
+      error:
+        "Failed to create checkout session",
+      details:
+        error.message
     });
   }
 });
